@@ -68,7 +68,7 @@ def extract_doc(request, doc_type):
 
     revisions = doc.pop('revisions', [])
 
-    if not request.validated.get(VERSION) and request.validated.get(VERSION_BY_DATE):
+    if request.validated.get(VERSION_BY_DATE):
         doc, revision_hash, prev_hash = get_version_from_date(request, doc, revisions)
         add_responce_headers(request, version=request.validated[VERSION],
                              rhash=revision_hash, phash=prev_hash)
@@ -172,7 +172,22 @@ def parse_hash(rev_hash):
 
 def validate_header(request):
     version = request.headers.get(VERSION, '')
+    version_by_date = request.headers.get(VERSION_BY_DATE, '')
+    version_invalid = False
     if version and (not version.isdigit() or int(version) < 1):
+        version_invalid = True
+    if version_by_date and version_by_date != '':
+        try:
+            parse_date(version_by_date)
+        except:
+            if version_invalid or version == '':
+                return404(request, 'header', 'version')
+            else:
+                request.validated[VERSION] = version
+                request.validated[HASH] = request.headers.get(HASH, '')
+                request.validated[VERSION_BY_DATE] = False
+                return
+    if version_invalid and version_by_date == '':
         return404(request, 'header', 'version')
     request.validated[VERSION] = version
     request.validated[HASH] = request.headers.get(HASH, '')
