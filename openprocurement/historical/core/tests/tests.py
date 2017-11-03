@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import unittest
+import os.path
 from copy import deepcopy
 from uuid import uuid4
 from pyramid.testing import DummyRequest
@@ -23,7 +24,10 @@ from openprocurement.historical.core.utils import (
     extract_doc,
     HasRequestMethod,
 )
-
+from openprocurement.api.tests.base import (
+    BaseTenderWebTest,
+    test_tender_data,
+)
 from openprocurement.api.utils import (
     add_logging_context,
     set_logging_context,
@@ -319,11 +323,257 @@ class HistoricalResourceTestCase(unittest.TestCase):
         self.assertEqual(response.status, '200 OK')
         self.assertEqual(response.content_type, 'application/json')
 
+        # Empty header
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Revision-Date': ""})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+        # Have not header
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id))
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        # Invalid date or number
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Revision-Date': "test_test"}, status=404)
+
+        self.assertEqual(response.status, '404 Not Found')
+        self.assertEqual(response.json['errors'], [{
+            u'description': u'Not Found',
+            u'location': u'header',
+            u'name': u'version'
+        }])
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Revision-Date': "test_test",
+                                         'X-Revision-N': '2'})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Revision-Date': "2016-06-14T17:17:33",
+                                         'X-Revision-N': 'invalid_version'})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Revision-Date': "invalid",
+                                         'X-Revision-N': 'invalid'}, status=404)
+        self.assertEqual(response.json['errors'], [{
+            u'description': u'Not Found',
+            u'location': u'header',
+            u'name': u'version'
+        }])
+
+
+class TestGetHistoricalData(BaseTenderWebTest):
+    relative_to = os.path.dirname(__file__)
+
+    def setUp(self):
+        super(TestGetHistoricalData, self).setUp()
+        self.app.authorization = ('Basic', ('broker', ''))
+
+    def _update_doc(self):
+        data = test_tender_data.copy()
+        tender = self.db.get(self.tender_id)
+        data['_id'] = self.tender_id
+        data['id'] = self.tender_id
+        data['_rev'] = tender['_rev']
+        self.db.save(data)
+
+    def test_get_historical_data(self):
+        response = self.app.get('/tenders')
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+        self.assertEqual(len(response.json['data']), 0)
+
+        response = self.app.post_json('/tenders', {'data': test_tender_data})
+        self.assertEqual(response.status, '201 Created')
+        self.assertEqual(response.content_type, 'application/json')
+
+        tender = response.json['data']
+
+        enquiries_historical = self.app.get('/tenders/{}/historical'.format(tender['id']))
+        self.assertEqual(enquiries_historical.status, '200 OK')
+        self.assertEqual(enquiries_historical.content_type, 'application/json')
+        enquiries = self.app.get('/tenders/{}'.format(tender['id']))
+        self.assertEqual(enquiries.status, '200 OK')
+        self.assertEqual(enquiries.content_type, 'application/json')
+        self.assertEqual(enquiries_historical.json['data'], enquiries.json['data'])
+
+        self.app.authorization = ('Basic', ('administrator', ''))
+        response = self.set_status("active.tendering")
+
+        tender = response.json['data']
+
+        response = self.app.patch_json('/tenders/{}?acc_token={}'.format(
+            tender['id'], self.tender_token), {"data": tender})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        self.app.authorization = ('Basic', ('broker', ''))
+
+        tendering_historical = self.app.get('/tenders/{}/historical'.format(tender['id']))
+        self.assertEqual(tendering_historical.status, '200 OK')
+        self.assertEqual(tendering_historical.content_type, 'application/json')
+        tendering = self.app.get('/tenders/{}'.format(tender['id']))
+        self.assertEqual(tendering.status, '200 OK')
+        self.assertEqual(tendering.content_type, 'application/json')
+        self.assertEqual(tendering_historical.json['data'], tendering.json['data'])
+
+        test_data1 = {
+                  "data": {
+                    "documents": [
+                      {
+                        "url": "http://public.docs-sandbox.openprocurement.org/get/331460f91e944a2d83136dee00b94f0f?KeyID=459f8ecf&Signature=TNOpuGEGleAHWS8gmR6mYc9O7e%2BEo2o28db4dVIaESJzcMyQVdTvA9xrfkzNXRGTlP2KUUpib8Bpk3rke2KkDg%3D%3D",
+                        "title": "Proposal_part1.pdf",
+                        "hash": "md5:00000000000000000000000000000000",
+                        "format": "application/pdf"
+                      },
+                      {
+                        "url": "http://public.docs-sandbox.openprocurement.org/get/3bfc49d63bd44e9488e1270003e52178?KeyID=459f8ecf&Signature=JXeIpHZQQo57b67ncruZEOHjEFrAtoW3GHrmDN4U2vOySIRAS9Hr5VrFh8BDZyhaYsiXjfqcCFWnxCxcPzdpBw%3D%3D",
+                        "title": "Proposal_part2.pdf",
+                        "hash": "md5:00000000000000000000000000000000",
+                        "format": "application/pdf"
+                      }
+                    ],
+                    "value": {
+                      "amount": 499
+                    },
+                    "tenderers": [
+                      {
+                        "contactPoint": {
+                          "telephone": "+380 (322) 91-69-30",
+                          "name": "Андрій Олексюк",
+                          "email": "aagt@gmail.com"
+                        },
+                        "identifier": {
+                          "scheme": "UA-EDR",
+                          "id": "00137226",
+                          "uri": "http://www.sc.gov.ua/"
+                        },
+                        "name": "ДКП «Книга»",
+                        "address": {
+                          "countryName": "Україна",
+                          "postalCode": "79013",
+                          "region": "м. Львів",
+                          "streetAddress": "вул. Островського, 34",
+                          "locality": "м. Львів"
+                        }
+                      }
+                    ]
+                  }
+                }
+
+        response = self.app.post_json('/tenders/{}/bids'.format(
+            tender['id']), test_data1)
+        self.assertEqual(response.status, '201 Created')
+        self.assertEqual(response.content_type, 'application/json')
+
+        tendering_historical = self.app.get('/tenders/{}/historical'.format(tender['id']))
+        self.assertEqual(tendering_historical.status, '200 OK')
+        self.assertEqual(tendering_historical.content_type, 'application/json')
+        tendering = self.app.get('/tenders/{}'.format(tender['id']))
+        self.assertEqual(tendering.status, '200 OK')
+        self.assertEqual(tendering.content_type, 'application/json')
+        self.assertEqual(tendering_historical.json['data'], tendering.json['data'])
+
+        self.app.authorization = ('Basic', ('administrator', ''))
+        response = self.set_status("active.auction")
+
+        tender = response.json['data']
+
+        response = self.app.patch_json('/tenders/{}?acc_token={}'.format(
+            tender['id'], self.tender_token), {"data": tender})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        self.app.authorization = ('Basic', ('broker', ''))
+
+        auction_historical = self.app.get('/tenders/{}/historical'.format(tender['id']))
+        self.assertEqual(auction_historical.status, '200 OK')
+        self.assertEqual(auction_historical.content_type, 'application/json')
+
+        auction = self.app.get('/tenders/{}'.format(tender['id']))
+        self.assertEqual(auction.status, '200 OK')
+        self.assertEqual(auction.content_type, 'application/json')
+        self.assertEqual(auction_historical.json['data'], auction.json['data'])
+
+        self.app.authorization = ('Basic', ('administrator', ''))
+        response = self.set_status("active.qualification")
+
+        tender = response.json['data']
+
+        response = self.app.patch_json('/tenders/{}?acc_token={}'.format(
+            tender['id'], self.tender_token), {"data": tender})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        self.app.authorization = ('Basic', ('broker', ''))
+
+        qualification_historical = self.app.get('/tenders/{}/historical'.format(tender['id']))
+        self.assertEqual(qualification_historical.status, '200 OK')
+        self.assertEqual(qualification_historical.content_type, 'application/json')
+
+        qualification = self.app.get('/tenders/{}'.format(tender['id']))
+        self.assertEqual(qualification.status, '200 OK')
+        self.assertEqual(qualification.content_type, 'application/json')
+        self.assertEqual(qualification_historical.json['data'], qualification.json['data'])
+        self.assertEqual(qualification_historical.json['data']['bids'],
+                         qualification.json['data']['bids'])
+
+        self.app.authorization = ('Basic', ('administrator', ''))
+        response = self.set_status("active.awarded")
+
+        tender = response.json['data']
+
+        response = self.app.patch_json('/tenders/{}?acc_token={}'.format(
+            tender['id'], self.tender_token), {"data": tender})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        self.app.authorization = ('Basic', ('broker', ''))
+
+        awarded_historical = self.app.get('/tenders/{}/historical'.format(tender['id']))
+        self.assertEqual(awarded_historical.status, '200 OK')
+        self.assertEqual(awarded_historical.content_type, 'application/json')
+
+        awarded = self.app.get('/tenders/{}'.format(tender['id']))
+        self.assertEqual(awarded.status, '200 OK')
+        self.assertEqual(awarded.content_type, 'application/json')
+        self.assertEqual(awarded_historical.json['data'], awarded.json['data'])
+        self.assertEqual(awarded_historical.json['data']['bids'],
+                         awarded.json['data']['bids'])
+
+        self.app.authorization = ('Basic', ('administrator', ''))
+        response = self.set_status("complete")
+
+        tender = response.json['data']
+
+        response = self.app.patch_json('/tenders/{}?acc_token={}'.format(
+            tender['id'], self.tender_token), {"data": tender})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+
+        self.app.authorization = ('Basic', ('broker', ''))
+
+        complete_historical = self.app.get('/tenders/{}/historical'.format(tender['id']))
+        self.assertEqual(complete_historical.status, '200 OK')
+        self.assertEqual(complete_historical.content_type, 'application/json')
+
+        complete = self.app.get('/tenders/{}'.format(tender['id']))
+        self.assertEqual(complete.status, '200 OK')
+        self.assertEqual(complete.content_type, 'application/json')
+        self.assertEqual(complete_historical.json['data'], complete.json['data'])
+        self.assertEqual(complete_historical.json['data']['bids'],
+                         complete.json['data']['bids'])
+
 
 def suite():
     suite = unittest.TestSuite()
     suite.addTest(unittest.makeSuite(HistoricalUtilsTestCase))
     suite.addTest(unittest.makeSuite(HistoricalResourceTestCase))
+    suite.addTest(unittest.makeSuite(TestGetHistoricalData))
     return suite
 
 
