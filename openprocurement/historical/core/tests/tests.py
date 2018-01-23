@@ -361,6 +361,99 @@ class HistoricalResourceTestCase(unittest.TestCase):
             u'name': u'version'
         }])
 
+    def test_batch_tenders(self):
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Revision-N': ''})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+        amount_of_versions = response.headers.get('X-Revision-N')
+        tender_last_version = response.json
+        tender_last_version.pop('Base')
+        # Last version
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Mode-Batch': amount_of_versions})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+        self.assertEqual(len(response.json['data']), 1)
+        self.assertEqual(response.json['data'][0], tender_last_version)
+
+        # Invalid version
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Mode-Batch': '17'}, status=404)
+        self.assertEqual(response.status, '404 Not Found')
+        self.assertEqual(response.json['errors'], [{
+            u'description': u'Not Found',
+            u'location': u'header',
+            u'name': u'version'
+        }])
+
+        # All versions
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Mode-Batch': '1'})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+        self.assertEqual(len(response.json['data']), int(amount_of_versions))
+
+        # First version
+
+        res = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                           headers={'X-Revision-N': '1'})
+        self.assertEqual(res.status, '200 OK')
+        first_version = res.json
+        first_version.pop('Base')
+        self.assertEqual(response.json['data'][0], first_version)
+
+        # Tenth version
+
+        res = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                           headers={'X-Revision-N': '10'})
+        self.assertEqual(res.status, '200 OK')
+        tenth_version = res.json
+        tenth_version.pop('Base')
+        self.assertEqual(response.json['data'][9], tenth_version)
+
+        # Invalid version
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Mode-Batch': 'invalid_1'}, status=404)
+        self.assertEqual(response.status, '404 Not Found')
+        self.assertEqual(response.json['errors'], [{
+            u'description': u'Not Found',
+            u'location': u'header',
+            u'name': u'version'
+        }])
+
+        # Many headers
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Mode-Batch': '5', 'X-Revision-N': '3'}, status=404)
+        self.assertEqual(response.status, '404 Not Found')
+        self.assertEqual(response.json['errors'], [{
+            u'description': u'Not Found',
+            u'location': u'header',
+            u'name': u'many headers'
+        }])
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Mode-Batch': '5', 'X-Revision-Date': '2016-06-14T16:59:58.951698+03:00'},
+                                status=404)
+        self.assertEqual(response.status, '404 Not Found')
+        self.assertEqual(response.json['errors'], [{
+            u'description': u'Not Found',
+            u'location': u'header',
+            u'name': u'many headers'
+        }])
+
+        response = self.app.get('/mock/{}/historical'.format(mock_doc.id),
+                                headers={'X-Mode-Batch': ''})
+        self.assertEqual(response.status, '200 OK')
+        self.assertEqual(response.content_type, 'application/json')
+        data = response.json
+        data.pop('Base')
+        self.assertEqual(data, tender_last_version)
+
 
 def suite():
     suite = unittest.TestSuite()
