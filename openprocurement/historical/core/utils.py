@@ -9,7 +9,7 @@ from pyramid.security import Allow
 from pyramid.interfaces import IRouteRequest, IRoutesMapper
 
 from openprocurement.historical.core.constants import (
-    VERSION, HASH, PREVIOUS_HASH, ACCREDITATION_LEVEL, VERSION_BY_DATE
+    VERSION, HASH, PREVIOUS_HASH, ACCREDITATION_LEVEL, VERSION_BY_DATE, BATCH_BY_VERSION
 )
 from openprocurement.api.utils import (
     error_handler,
@@ -58,8 +58,14 @@ def get_version_from_date(request, doc, revisions):
     return404(request, 'header', 'version')
 
 
-def extract_doc(request, doc_type):
+def get_date_for_doc_last_version(revisions, doc):
+    date_modified = find_dateModified(revisions)
+    if date_modified:
+        doc['dateModified'] = date_modified
+    return doc
 
+
+def extract_doc(request, doc_type):
     doc_id = request.matchdict['doc_id']
     if doc_id is None:
         return404(request, 'url', '{}_id'.format(doc_type.lower()))  # pragma: no cover
@@ -86,9 +92,7 @@ def extract_doc(request, doc_type):
                                  revisions[-1].get('rev')
                                  if len(revisions) > 0 else ''
                              ))
-        date_modified = find_dateModified(revisions)
-        if date_modified:
-            doc['dateModified'] = date_modified
+        doc = get_date_for_doc_last_version(revisions, doc)
         return doc
 
     if int(request.validated.get(VERSION)) > len(revisions):
@@ -114,19 +118,39 @@ def raise_not_implemented(request):
     raise error_handler(request.errors)
 
 
-def apply_while(request, doc, revisions):
+def validate_hash_and_find_date_modified(patch, revisions,
+                                         version, doc, request):
+    if request.validated[HASH] and \
+                    request.validated[HASH] != parse_hash(patch.get('rev')):
+        return404(request, 'header', 'hash')
+
+    doc['dateModified'] = find_dateModified(revisions[:version + 1])
+    return doc
+
+
+def apply_while(request, doc, revisions, batch=False):
+    doc = get_date_for_doc_last_version(revisions, doc)
+    data = [doc]
     for version, patch in reversed(list(enumerate(revisions))):
         doc = get_valid_apply_patch_doc(doc, request, patch)
-        if str(version) == request.validated[VERSION]:
-            if request.validated[HASH] and\
-               request.validated[HASH] != parse_hash(patch.get('rev')):
-                return404(request, 'header', 'hash')
-
-            doc['dateModified'] = find_dateModified(revisions[:version+1])
-            return (doc,
-                    parse_hash(patch['rev']),
-                    parse_hash(revisions[version - 1].get('rev', '')))
-    return404('header', 'version')
+        if batch:
+            if str(version) >= request.validated[BATCH_BY_VERSION]:
+                doc = validate_hash_and_find_date_modified(patch, revisions, version, doc, request)
+                data.append(doc)
+                if int(request.validated[BATCH_BY_VERSION]) == int(version):
+                    data.reverse()
+                    return data
+            elif int(version) + 1 == int(request.validated[BATCH_BY_VERSION]):
+                return data
+            else:
+                return404(request, 'header', 'version')
+        else:
+            if str(version) == request.validated[VERSION]:
+                doc = validate_hash_and_find_date_modified(patch, revisions, version, doc, request)
+                return (doc,
+                        parse_hash(patch['rev']),
+                        parse_hash(revisions[version - 1].get('rev', '')))
+    return404(request, 'header', 'version')
 
 
 def find_dateModified(revisions):
@@ -179,6 +203,14 @@ def parse_hash(rev_hash):
 def validate_header(request):
     version = request.validated[VERSION] = request.headers.get(VERSION, '')
     request.validated[HASH] = request.headers.get(HASH, '')
+    batch_by_version = request.validated[BATCH_BY_VERSION] = request.headers.get(BATCH_BY_VERSION)
+
+    if batch_by_version and (not batch_by_version.isdigit() or int(batch_by_version) < 1):
+        return404(request, 'header', 'version')
+
+    if batch_by_version and (version or request.headers.get(VERSION_BY_DATE, '')):
+        return404(request, 'header', 'many headers')
+
     if request.headers.get(VERSION_BY_DATE, '') != '':
         try:
             request.validated[VERSION_BY_DATE] = parse_date(request.headers.get(VERSION_BY_DATE, ''))
@@ -216,6 +248,22 @@ class HasRequestMethod(object):
         return hasattr(request, self.val)
 
 
+def get_batch_docs(request, doc_type='Tender'):
+    doc_id = request.matchdict['doc_id']
+    if doc_id is None:
+        return404(request, 'url', '{}_id'.format(doc_type.lower()))  # pragma: no cover
+    validate_header(request)
+    doc = request.registry.db.get(doc_id)
+    if doc is None or doc.get('doc_type') != doc_type:
+        return404(request, 'url', '{}_id'.format(doc_type.lower()))
+
+    revisions = doc.pop('revisions', [])
+    if request.validated.get(BATCH_BY_VERSION):
+        docs = apply_while(request, doc, revisions, batch=True)
+        return docs
+    return404(request, 'header', 'invalid')
+
+
 class APIHistoricalResource(APIResource):
 
     def __init__(self, request, context):
@@ -233,7 +281,9 @@ class APIHistoricalResource(APIResource):
             ver=self.request.validated[VERSION],
             rev=self.context.rev
         )
-
         self.LOGGER.info(msg, extra=context_unpack(self.request, {
             'MESSAGE_ID': '{}_historical'.format(self.resource)}))
+        if self.request.headers.get(BATCH_BY_VERSION, ''):
+            batch_docs = get_batch_docs(request=self.request, doc_type=self.context.doc_type)
+            return {'data': batch_docs}
         return call_view(self.request, self.context, route)
